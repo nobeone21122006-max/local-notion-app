@@ -1794,3 +1794,71 @@ code {
     grid-template-columns: 1fr;
   }
 }
+/* =========================================
+   CHỈ ÁP DỤNG CHO ĐIỆN THOẠI (<= 768px)
+   MÁY TÍNH GIỮ NGUYÊN 100%
+   ========================================= */
+@media (max-width: 768px) {
+  /* 1. Xếp Sidebar lên trên và Nội dung xuống dưới thay vì nằm ngang */
+  .app-container,
+  .layout,
+  #root > div {
+    flex-direction: column !important;
+    height: auto !important;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* 2. Biến Sidebar thành thanh menu gọn gàng ở trên cùng, vuốt ngang được */
+  aside,
+  .sidebar {
+    width: 100% !important;
+    min-width: 100% !important;
+    height: auto !important;
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    padding: 10px 12px !important;
+    border-right: none !important;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    overflow-x: auto;
+  }
+
+  /* 3. Vùng nội dung chính full chiều rộng màn hình dọc */
+  main,
+  .main-content {
+    width: 100% !important;
+    padding: 14px 12px 80px 12px !important;
+    margin-left: 0 !important;
+    box-sizing: border-box;
+  }
+
+  /* 4. Các lưới (Lịch, Thống kê GPA, Thẻ Dashboard) tự dồn về 1 hoặc 2 cột */
+  .grid,
+  .stats-grid,
+  .dashboard-grid {
+    grid-template-columns: 1fr !important;
+    gap: 12px !important;
+  }
+
+  /* 5. Bảng điểm GPA / Bảng dữ liệu vuốt ngang mượt mà không làm tràn trang */
+  table {
+    display: block;
+    width: 100%;
+    overflow-x: auto;
+    white-space: nowrap;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* 6. Chống iOS/Safari tự động zoom màn hình khi bấm vào ô nhập liệu */
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+
+  /* 7. Nút bấm to hơn một chút cho dễ chạm bằng ngón tay */
+  button {
+    min-height: 38px;
+  }
+}
