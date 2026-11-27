@@ -20,11 +20,14 @@ import {
   CalendarDays,
   BookHeart,
   Target,
-  LayoutDashboard,
+  Home,
   UserCheck,
   Tag,
   X,
   AlertTriangle,
+  Flame,
+  Cloud,
+  LogOut,
 } from 'lucide-react';
 import {
   db,
@@ -40,13 +43,16 @@ import { Guide } from './components/Guide';
 import { CalendarView } from './components/CalendarView';
 import { DashboardView } from './components/DashboardView';
 import { JournalView } from './components/JournalView';
-import { PlannerView } from './components/PlannerView';
+import { PlannerView, calculateStreak } from './components/PlannerView';
+import type { User } from 'firebase/auth';
 import {
-  getSavedGitHubToken,
-  saveGitHubToken,
-  pushToGitHub,
-  pullFromGitHub,
-} from './utils/githubSync';
+  isFirebaseConfigured,
+  signInWithGoogle,
+  signOutFirebase,
+  subscribeAuth,
+} from './utils/firebase.ts';
+import { startFirestoreSync, type SyncStatus } from './utils/firebaseSync';
+
 interface HeadingItem {
   id: string;
   text: string;
@@ -57,15 +63,25 @@ type ActiveView = 'dashboard' | 'journal' | 'planner' | 'calendar' | 'profile' |
 
 export default function App() {
   const pages = useLiveQuery(() => db.pages.toArray());
+  const habits = useLiveQuery(() => db.habits.toArray()) ?? [];
+  const journals = useLiveQuery(() => db.journals.toArray()) ?? [];
 
   const [activeId, setActiveId] = useState<number | null>(null);
   const [activeView, setActiveView] = useState<ActiveView>('dashboard');
   const [search, setSearch] = useState('');
-  const [theme, setTheme] = useState<'light' | 'dark'>('dark');
+  const [theme, setTheme] = useState<'light' | 'dark'>('light');
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [expandedIds, setExpandedIds] = useState<Record<number, boolean>>({});
   const [tagInput, setTagInput] = useState('');
   const [backupReminder, setBackupReminder] = useState(false);
+  const [displayName, setDisplayName] = useState<string>(
+    () => localStorage.getItem('local_notion_display_name') || 'Bạn'
+  );
+  const [cloudUser, setCloudUser] = useState<User | null>(null);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>({
+    state: 'idle',
+    message: 'Chưa đăng nhập Cloud',
+  });
 
   const searchInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -74,6 +90,18 @@ export default function App() {
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
 
+  useEffect(() => {
+    const syncName = () => {
+      setDisplayName(localStorage.getItem('local_notion_display_name') || 'Bạn');
+    };
+    window.addEventListener('storage', syncName);
+    window.addEventListener('local-notion-name-updated', syncName);
+    return () => {
+      window.removeEventListener('storage', syncName);
+      window.removeEventListener('local-notion-name-updated', syncName);
+    };
+  }, []);
+
   // Kiểm tra nhắc nhở sao lưu quá 7 ngày
   useEffect(() => {
     const days = getDaysSinceLastBackup();
@@ -81,6 +109,23 @@ export default function App() {
       setBackupReminder(true);
     }
   }, []);
+
+  // Theo dõi trạng thái đăng nhập Firebase
+  useEffect(() => {
+    return subscribeAuth((user) => {
+      setCloudUser(user);
+      if (!user) {
+        setSyncStatus({ state: 'idle', message: 'Chưa đăng nhập Cloud' });
+      }
+    });
+  }, []);
+
+  // Tự động bật đồng bộ 2 chiều Realtime với Firestore khi đã đăng nhập
+  useEffect(() => {
+    if (!cloudUser) return;
+    const stopSync = startFirestoreSync(cloudUser.uid, setSyncStatus);
+    return () => stopSync();
+  }, [cloudUser]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -97,6 +142,13 @@ export default function App() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
+
+  const overallStreak = useMemo(() => {
+    const dateSet = new Set<string>();
+    habits.forEach((h) => h.completedDates.forEach((d) => dateSet.add(d)));
+    journals.forEach((j) => dateSet.add(j.date));
+    return calculateStreak(Array.from(dateSet));
+  }, [habits, journals]);
 
   const activePage = pages?.find((p) => p.id === activeId);
 
@@ -229,48 +281,17 @@ export default function App() {
     }
   };
 
-  const [syncing, setSyncing] = useState(false);
+  const handleGoogleLogin = async () => {
+    try {
+      await signInWithGoogle();
+    } catch (err: any) {
+      alert('❌ Đăng nhập thất bại: ' + err.message);
+    }
+  };
 
-const ensureToken = (): boolean => {
-  let token = getSavedGitHubToken();
-  if (!token) {
-    const input = window.prompt(
-      'Nhập GitHub Personal Access Token (ghp_...) có quyền repo để đồng bộ:'
-    );
-    if (!input) return false;
-    saveGitHubToken(input);
-  }
-  return true;
-};
-
-const handleCloudPush = async () => {
-  if (!ensureToken()) return;
-  try {
-    setSyncing(true);
-    await pushToGitHub();
-    alert('✅ Đã đẩy dữ liệu mới nhất lên GitHub!');
-  } catch (err: any) {
-    alert('❌ Lỗi Push: ' + err.message);
-  } finally {
-    setSyncing(false);
-  }
-};
-
-const handleCloudPull = async () => {
-  if (!ensureToken()) return;
-  if (!window.confirm('Tải dữ liệu từ GitHub về sẽ cập nhật lại thiết bị này. Tiếp tục?')) {
-    return;
-  }
-  try {
-    setSyncing(true);
-    await pullFromGitHub();
-    alert('✅ Đã đồng bộ dữ liệu từ GitHub về máy!');
-  } catch (err: any) {
-    alert('❌ Lỗi Pull: ' + err.message);
-  } finally {
-    setSyncing(false);
-  }
-};
+  const handleGoogleLogout = async () => {
+    await signOutFirebase();
+  };
 
   const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -363,8 +384,20 @@ const handleCloudPull = async () => {
     <div className="app-layout">
       {sidebarOpen && (
         <aside className="sidebar">
+          {/* Lỗ gáy sổ trang trí giống phong cách sổ tay */}
+          <div className="sidebar-binder-dots" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+            <span />
+          </div>
+
           <div className="sidebar-header">
-            <span className="brand">Local Notion</span>
+            <div className="brand-logo" onClick={() => setActiveView('dashboard')}>
+              <span className="brand-mark">LN</span>
+              <span className="brand-divider">|</span>
+              <span className="brand-word">NOTION</span>
+            </div>
             <div className="header-actions">
               <button
                 className="icon-btn"
@@ -394,42 +427,61 @@ const handleCloudPull = async () => {
             />
           </div>
 
-          {/* Menu điều hướng chính */}
+          {/* Menu điều hướng chính với icon pastel */}
           <div className="nav-group">
-            <button
-              className={`guide-nav-btn ${activeView === 'profile' ? 'active' : ''}`}
-              onClick={() => setActiveView('profile')}
-            >
-              <UserCheck size={15} />
-              <span>Hồ sơ & Két sắt</span>
-            </button>
             <button
               className={`guide-nav-btn ${activeView === 'dashboard' ? 'active' : ''}`}
               onClick={() => setActiveView('dashboard')}
             >
-              <LayoutDashboard size={15} />
-              <span>Hôm nay (Dashboard)</span>
+              <span className="nav-icon-badge icon-home">
+                <Home size={14} />
+              </span>
+              <span>Trang chủ</span>
             </button>
             <button
               className={`guide-nav-btn ${activeView === 'journal' ? 'active' : ''}`}
               onClick={() => setActiveView('journal')}
             >
-              <BookHeart size={15} />
+              <span className="nav-icon-badge icon-journal">
+                <BookHeart size={14} />
+              </span>
               <span>Nhật ký hằng ngày</span>
             </button>
             <button
               className={`guide-nav-btn ${activeView === 'planner' ? 'active' : ''}`}
               onClick={() => setActiveView('planner')}
             >
-              <Target size={15} />
+              <span className="nav-icon-badge icon-planner">
+                <Target size={14} />
+              </span>
               <span>Kế hoạch & Thói quen</span>
             </button>
             <button
               className={`guide-nav-btn ${activeView === 'calendar' ? 'active' : ''}`}
               onClick={() => setActiveView('calendar')}
             >
-              <CalendarDays size={15} />
-              <span>Bảng lịch (Calendar)</span>
+              <span className="nav-icon-badge icon-calendar">
+                <CalendarDays size={14} />
+              </span>
+              <span>Bảng lịch</span>
+            </button>
+            <button
+              className={`guide-nav-btn ${activeView === 'profile' ? 'active' : ''}`}
+              onClick={() => setActiveView('profile')}
+            >
+              <span className="nav-icon-badge icon-profile">
+                <UserCheck size={14} />
+              </span>
+              <span>Hồ sơ & Két sắt</span>
+            </button>
+            <button
+              className={`guide-nav-btn ${activeView === 'guide' ? 'active' : ''}`}
+              onClick={() => setActiveView('guide')}
+            >
+              <span className="nav-icon-badge icon-guide">
+                <BookOpen size={14} />
+              </span>
+              <span>Hướng dẫn sử dụng</span>
             </button>
           </div>
 
@@ -501,6 +553,7 @@ const handleCloudPull = async () => {
             )}
           </nav>
 
+          {/* Thẻ hồ sơ & đồng bộ dưới cùng */}
           <div className="sidebar-bottom">
             {backupReminder && (
               <div className="backup-alert">
@@ -509,45 +562,86 @@ const handleCloudPull = async () => {
               </div>
             )}
 
-            <button
-              className={`guide-nav-btn ${activeView === 'guide' ? 'active' : ''}`}
-              onClick={() => setActiveView('guide')}
-            >
-              <BookOpen size={15} />
-              <span>Hướng dẫn sử dụng</span>
-            </button>
+            <div className="sidebar-profile-card">
+              <div
+                className="sidebar-profile-top"
+                onClick={() => setActiveView('profile')}
+                title="Mở Hồ sơ & Két sắt"
+              >
+                <div className="sidebar-avatar">
+                  {displayName.charAt(0).toUpperCase()}
+                </div>
+                <div className="sidebar-profile-info">
+                  <div className="sidebar-profile-name">{displayName}</div>
+                  <div className="sidebar-profile-sub">
+                    {pages?.length ?? 0} trang tài liệu
+                  </div>
+                </div>
+              </div>
+
+              <div className="sidebar-profile-stats">
+                <div className="profile-stat-item">
+                  <span className="profile-stat-num coral">
+                    <Flame size={12} /> {overallStreak}
+                  </span>
+                  <span className="profile-stat-label">ngày liền</span>
+                </div>
+                <div className="profile-stat-divider" />
+                <div className="profile-stat-item">
+                  <span className="profile-stat-num">{journals.length}</span>
+                  <span className="profile-stat-label">nhật ký</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="cloud-sync-box">
+              {cloudUser ? (
+                <>
+                  <div className="cloud-sync-row">
+                    <span className={`sync-dot ${syncStatus.state}`} />
+                    <span className="cloud-sync-msg">{syncStatus.message}</span>
+                    <button
+                      className="icon-btn"
+                      onClick={handleGoogleLogout}
+                      title="Đăng xuất đồng bộ Cloud"
+                    >
+                      <LogOut size={13} />
+                    </button>
+                  </div>
+                  <div className="cloud-sync-email">{cloudUser.email}</div>
+                </>
+              ) : (
+                <button
+                  className="footer-btn full-width"
+                  onClick={handleGoogleLogin}
+                  disabled={!isFirebaseConfigured}
+                  title={
+                    isFirebaseConfigured
+                      ? 'Đăng nhập Google để tự động đồng bộ giữa các thiết bị'
+                      : 'Cần cấu hình .env.local để bật Firebase'
+                  }
+                >
+                  <Cloud size={13} />
+                  {isFirebaseConfigured
+                    ? 'Đăng nhập Google (Auto Sync)'
+                    : 'Chưa cấu hình Firebase'}
+                </button>
+              )}
+            </div>
 
             <button className="footer-btn full-width" onClick={handleSyncFolder}>
               <FolderSync size={13} /> Lưu ra thư mục (.json + .md)
             </button>
 
-            <div className="sidebar-footer">
+            <div className="sidebar-footer-grid">
               <button className="footer-btn" onClick={handleBackup}>
-                <Download size={13} /> Backup JSON
+                <Download size={12} /> Backup
               </button>
               <button
                 className="footer-btn"
                 onClick={() => fileInputRef.current?.click()}
               >
-                <Upload size={13} /> Khôi phục
-              </button>
-              <button
-                className="sidebar-action-btn"
-                onClick={handleCloudPush}
-                disabled={syncing}
-                title="Đẩy dữ liệu lên GitHub Repo"
-              >
-                <Upload size={14} />
-                <span>{syncing ? 'Đang xử lý...' : 'Đẩy lên Cloud'}</span>
-              </button>
-              <button
-                className="sidebar-action-btn"
-                onClick={handleCloudPull}
-                disabled={syncing}
-                title="Kéo dữ liệu từ GitHub Repo về máy"
-              >
-                <Download size={14} />
-                <span>{syncing ? 'Đang xử lý...' : 'Kéo từ Cloud'}</span>
+                <Upload size={12} /> Khôi phục
               </button>
 
               <input
@@ -574,7 +668,10 @@ const handleCloudPull = async () => {
         )}
 
         {activeView === 'dashboard' ? (
-          <DashboardView onNavigate={(v) => setActiveView(v)} />
+          <DashboardView
+            onNavigate={(v) => setActiveView(v)}
+            onCreatePage={() => createPage(null)}
+          />
         ) : activeView === 'journal' ? (
           <JournalView />
         ) : activeView === 'planner' ? (
